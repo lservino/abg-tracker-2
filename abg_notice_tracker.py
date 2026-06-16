@@ -475,9 +475,9 @@ with col2:
 
     tf = st.file_uploader(".xlsx", type=["xlsx","xls"],
                            label_visibility="collapsed", key="tracker_up")
-    if tf:
+    if tf and tf.name != st.session_state.get("_last_tracker_name"):
         load_tracker(tf.read(), tf.name)
-        st.rerun()
+        st.session_state["_last_tracker_name"] = tf.name
 
     embed_date = st.session_state.get(TRACKER_DATE_KEY, "—")
     st.markdown(f'<p class="tip">Tracker last updated: <strong>{embed_date}</strong></p>',
@@ -578,6 +578,7 @@ if st.button("⚡  Extract & Process Notices", type="primary",
 
     prog.progress(100, text="Done!")
     log(f"Extracted {len(st.session_state.extracted_rows)} notice(s).", "ok")
+    st.session_state["_rows_changed"] = True
     st.rerun()
 
 # ── Log box ───────────────────────────────────────────────────────────────────
@@ -713,36 +714,55 @@ if st.session_state.extracted_rows:
     dc1, dc2, dc3 = st.columns(3)
 
     with dc1:
-        if st.button("⬇  Download Updated Tracker", type="primary", use_container_width=True):
+        # Pre-compute the xlsx whenever extracted_rows exist so download_button works
+        if "tracker_download_bytes" not in st.session_state or st.session_state.get("_rows_changed"):
             wb = st.session_state.tracker_wb
             if wb is None:
                 wb = openpyxl.Workbook(); ws = wb.active
                 ws.title = "Notices"; ws.append(COL_HEADERS)
+            else:
+                # Work on a copy so we don't mutate session state wb prematurely
+                import copy
+                wb = copy.deepcopy(wb)
             write_rows(wb, st.session_state.extracted_rows)
             xb = wb_bytes(wb)
-            today = date.today().strftime("%Y-%m-%d")
+            st.session_state["tracker_download_bytes"] = xb
+            st.session_state["tracker_download_wb"]    = wb
+            st.session_state["_rows_changed"] = False
+
+        today = date.today().strftime("%Y-%m-%d")
+        xb = st.session_state["tracker_download_bytes"]
+
+        def on_tracker_download():
+            st.session_state.tracker_wb        = st.session_state["tracker_download_wb"]
             st.session_state[TRACKER_B64_KEY]  = base64.b64encode(xb).decode()
             st.session_state[TRACKER_DATE_KEY] = date.today().strftime("%m-%d-%y")
-            st.session_state.tracker_wb        = load_wb(xb)
             st.session_state.next_file_num     = get_next_num(st.session_state.tracker_wb["Notices"])
             st.session_state.tracker_label     = f"Updated {date.today().strftime('%m-%d-%y')}"
-            st.download_button("⬇  Save Tracker", data=xb,
-                               file_name=f"ABG_Notice_Tracker_Updated_{today}.xlsx",
-                               mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                               use_container_width=True)
-            log(f"Tracker saved — {today}", "ok")
+            log(f"Tracker downloaded — {today}", "ok")
+
+        st.download_button(
+            "⬇  Download Updated Tracker",
+            data=xb,
+            file_name=f"ABG_Notice_Tracker_Updated_{today}.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            use_container_width=True,
+            type="primary",
+            on_click=on_tracker_download,
+        )
 
     with dc2:
-        if st.button("⬇  Save Renamed PDFs", use_container_width=True):
-            for row in st.session_state.extracted_rows:
-                if row.get("pdfBytes"):
-                    st.download_button(
-                        f"⬇  Notice #{row['fileNum']}.pdf",
-                        data=row["pdfBytes"],
-                        file_name=f"Notice #{row['fileNum']}.pdf",
-                        mime="application/pdf",
-                        key=f"dlp_{row['fileNum']}",
-                        use_container_width=True)
+        pdfs_with_bytes = [r for r in st.session_state.extracted_rows if r.get("pdfBytes")]
+        if pdfs_with_bytes:
+            st.markdown('<p style="font-size:12px;font-weight:700;color:#2e4a6e;margin-bottom:6px;">SAVE RENAMED PDFs</p>', unsafe_allow_html=True)
+            for row in pdfs_with_bytes:
+                st.download_button(
+                    f"⬇  Notice #{row['fileNum']}.pdf",
+                    data=row["pdfBytes"],
+                    file_name=f"Notice #{row['fileNum']}.pdf",
+                    mime="application/pdf",
+                    key=f"dlp_{row['fileNum']}",
+                    use_container_width=True)
 
     with dc3:
         pass  # Clear All is now in the action row above
